@@ -10,10 +10,6 @@ SoftwareSerial wifiSerialInit (RXPIN,TXPIN);
 
 int value = 0; // valor de cualquier pin digital
 
-// se han reseteado los contadores al estado inicial?
-bool conters_init_state;
-
-
 struct counter
    {  String name;  
       int pin ;
@@ -30,6 +26,17 @@ counter *counters[] = {&e1, &e2, &e3, &e4, &e5, &e6};
 // tiempo base a partir del que se configuran las tx ca 5 sgs
 unsigned long time_base_tx ; 
 
+/* se han reseteado los contadores al estado inicial?:
+ *  
+ * e1.state = 2;
+ * e1.time_output = 4294967295 ;
+ * e1.time_transmision = 4294967295 ;
+ * 
+ * time_base_tx = millis() ;
+ * e1.time_transmision = time_base_tx + 5000  ;
+*/
+bool conters_init_state;
+
 //declaración de funciones
 void test_transmision(counter *);
 void configure_time_base_tx();
@@ -44,8 +51,8 @@ void setup() {
   e1.pin = 14;
   e1.state = 2;
   e1.pulse= 0 ;
-  e1.time_output = 10000 ;
-  e1.time_transmision = 20000 ;
+  e1.time_output = 4294967295 ;
+  e1.time_transmision = 4294967295 ;
 
   e2 = e1 ;
   e2.pin = 15 ;
@@ -55,7 +62,6 @@ void setup() {
   e3.pin = 16 ;
   e3.name = "e3";
 
-  
   e4 = e1 ;
   e4.pin = 17 ;
   e4.name = "e4";
@@ -68,14 +74,16 @@ void setup() {
   e6.pin = 19 ;
   e6.name = "e6";
 
-  time_base_tx = 0;
-  
   pinMode(e1.pin, INPUT_PULLUP);  //definir pin como entrada
   pinMode(e2.pin, INPUT_PULLUP);  //definir pin como entrada
   pinMode(e3.pin, INPUT_PULLUP);  //definir pin como entrada
   pinMode(e4.pin, INPUT_PULLUP);  //definir pin como entrada  
   pinMode(e5.pin, INPUT_PULLUP);  //definir pin como entrada
   pinMode(e6.pin, INPUT_PULLUP);  //definir pin como entrada
+  
+  time_base_tx = 0;
+  conters_init_state = PENDIG;
+  delay(400);
 }
  
 void loop(){
@@ -83,18 +91,19 @@ void loop(){
 /************************************/
 /***********  cron  *******************/
 /************************************/
-  if ((conters_init_state == PENDIG) && (millis() < 10000)) { // resenteo los tiempos de espera
+  if ((conters_init_state == PENDIG) && (millis() < 10000)) { // resenteo los contadores
     counters_init();
   }
 
-  // inhibir la transmisión durante el último minuto
-  // evita configurar tiempos de tx que excedan el tiempo maximo
-  if ((millis() > time_base_tx + 60000) && (millis() < 4294867295)){ 
+  uint32_t current_time = millis();
+
+  if (current_time < time_base_tx) counters_init(); // millis() ha dado la vuelta
+  if ((current_time - time_base_tx > 59000)&& (millis() < 4294867295)){ // los 100 segundos ultimos nos se programa tx
     configure_time_base_tx(); 
   }
   
   //configuro la variable durante el último segundo
-  if ((millis() > 4294866295)){ 
+  if ((millis() > 4294966295)){ 
     conters_init_state = PENDIG ;
   }
 
@@ -108,19 +117,19 @@ void loop(){
   //    4: Bajo, esperando alto
   //    5 :transicion a alto
   
-  for (int n=0; n < 6; n++){
-    switch (counters[n]->state) {           
-      case 2: // bajo?
+  if (millis() < 4294966295){           // el último segundo NO se cuentan pulsos
+    for (int n=0; n < 6; n++){
+      test_transmision(counters[n]);    // ejecutar transmisiones pendientes
+      switch (counters[n]->state) {           
+      case 2: // esperando flanco de bajada
         value = digitalRead(counters[n]->pin);  //lectura digital de pin
         if (value == LOW) {
           counters[n]->pulse++;
           counters[n]->state=3;
           counters[n]->time_output = millis() + 50;
-          if(millis() > 4294967195) {counters[n]->time_output = 4294967295;}
         }
-        else {test_transmision(counters[n]);}
         break;
-      case 3: //transicion bajo
+      case 3: // transicion a bajo: ignoramos rebotes del pulso
         if (millis() >= counters[n]->time_output ) {
           counters[n]->state=4;
         }  
@@ -130,9 +139,7 @@ void loop(){
         if (value == HIGH) {
           counters[n]->state = 5;
           counters[n]->time_output = millis() + 50;
-          if(millis() > 4294967195) {counters[n]->time_output = 4294967295;}
         }
-        else {test_transmision(counters[n]);} 
         break;       
       case 5: //transicion alto
         if (millis() >= counters[n]->time_output ) {
@@ -142,9 +149,10 @@ void loop(){
       default:
         Serial.println("error: ningun case");
         break;
-      }
-  }
-} // final loop()
+      } // final switch
+    }   // final for
+  }     // final if
+}       // final loop()
 
 /************************************/
 /****** definicion de funciones *****/
@@ -159,7 +167,9 @@ void test_transmision(counter *e){
     Serial.println(message_to_tx);
     wifiSerialInit.println (message_to_tx);
     
-    e->time_transmision =  4294967295;
+    // una vez transmitidos los pulsos,
+    // inhibimos la transmisión del contador
+    e->time_transmision =  4294967295;  
   }
 }
 
@@ -174,11 +184,13 @@ void configure_time_base_tx(){
 }
 
 void counters_init(){
-  e1.state = 2;
-  e2.state = 2;
-  e3.state = 2;
-  e4.state = 2;
-  e5.state = 2;
-  e6.state = 2;
+  for (int n=0; n < 6; n++){
+    counters[n]->state = 2;
+    counters[n]->time_output = 4294967295;
+  }
+  configure_time_base_tx(); 
   conters_init_state = EXECUTED;
 }
+
+
+
